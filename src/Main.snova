@@ -1,49 +1,99 @@
 package Snova.Http.Main
 
-import Snova.Std.Http
-import Snova.Std.Server
+
+import Snova.Std.Network
+import Snova.Std.Network.Tcp
+import Snova.Std.Network.Http
 import Snova.Std.Collections
 import Snova.Std.Strings
 import Snova.Std.IO
 
+
 func main(): int {
-    Console.printline("=== Snovalang HTTP Server Starting ===")
+    Console.printline("=== Snovalang HTTP & TCP Network Server Starting ===")
 
+    // HttpServerConfig.create() wraps NetworkConfig — DRY principle at work
     let server = HttpServer.create(8080)
-    
+
+    // Router implements IHttpHandler — fully substitutable via LSP
     let router = Router.new()
-    router.get("/api/health", 200, "{\"status\":\"healthy\",\"uptime\":\"ok\"}")
+    router.get("/api/health",  200, "{\"status\":\"healthy\",\"uptime\":\"ok\"}")
     router.get("/api/version", 200, "{\"version\":\"1.0.0\",\"runtime\":\"SnovaRuntime\"}")
-    router.post("/api/echo", 201, "{\"message\":\"received\"}")
-    
-    server.setRouter(router)
-    server.listen()
+    router.post("/api/echo",   201, "{\"message\":\"received\"}")
 
-    // Simulate waiting for and serving incoming HTTP requests
-    let headers = HeaderMap.new()
-    headers.set("Accept", "application/json")
+    // setHandler accepts any IHttpHandler — Dependency Inversion Principle
+    server.setHandler(router)
+    server.listen(false)
 
-    Console.printline("\n--- Incoming Connection: GET /api/health ---")
-    let req1 = HttpRequest.new(HttpMethod.Get, "/api/health", headers, "")
-    let res1 = server.handleRequest(req1)
+    // HttpWorkerPool also implements IHttpHandler — pool IS-A handler (LSP)
+    Console.printline("\n--- Initializing Pulsar HTTP Workers ---")
+    let workerPool = server.startWithWorkers(3, false)
+
+    // TcpWorkerPool manages workers through the IWorker interface
+    Console.printline("\n--- Initializing Pulsar TCP Workers ---")
+    let tcpPool = TcpWorkerPool.create("0.0.0.0", 9000, 2)
+    tcpPool.start(false)
+
+    // Demonstrate shorthand request factories (HttpRequest.get / .post)
+    Console.printline("\n--- Incoming HTTP Request: GET /api/health ---")
+    let req1 = HttpRequest.get("/api/health")
+    let res1 = workerPool.handle(req1)
     Console.printline(res1.format())
 
-    Console.printline("--- Incoming Connection: GET /api/version ---")
-    let req2 = HttpRequest.new(HttpMethod.Get, "/api/version", headers, "")
-    let res2 = server.handleRequest(req2)
+    Console.printline("--- Incoming HTTP Request: GET /api/version ---")
+    let req2 = HttpRequest.get("/api/version")
+    let res2 = workerPool.handle(req2)
     Console.printline(res2.format())
 
-    Console.printline("--- Incoming Connection: POST /api/echo ---")
-    let req3 = HttpRequest.new(HttpMethod.Post, "/api/echo", headers, "{\"test\":true}")
-    let res3 = server.handleRequest(req3)
+    Console.printline("--- Incoming HTTP Request: POST /api/echo ---")
+    let req3 = HttpRequest.post("/api/echo", "{\"test\":true}")
+    let res3 = workerPool.handle(req3)
     Console.printline(res3.format())
 
-    Console.printline("--- Incoming Connection: GET /api/notfound ---")
-    let req4 = HttpRequest.new(HttpMethod.Get, "/api/notfound", headers, "")
-    let res4 = server.handleRequest(req4)
+    Console.printline("--- Incoming HTTP Request: GET /api/notfound ---")
+    let req4 = HttpRequest.get("/api/notfound")
+    let res4 = workerPool.handle(req4)
     Console.printline(res4.format())
 
-    server.stop()
+    // Demonstrate HttpContext and RuntimeContext shared across workers and pulsar functions
+    Console.printline("\n--- Context Lifecycle & Pulsar Propagation Demonstration ---")
+    let ctx = HttpContext.create(HttpRequest.get("/api/health"), "ctx_trace_9999", 2)
+    ctx.set("tenant_id", "tenant_alpha")
+    ctx.set("user_id", "user_123")
+    ctx.setMetadata("security_level", "high")
+    let rtCtx = RuntimeContext.new(ctx)
+    rtCtx.set("session_token", "tok_xyz_abc")
+    Console.printline("Context initialized: " + ctx.id + " | WorkerId: " + StringUtils.intToString(ctx.workerId))
+    Console.printline("RuntimeContext summary: " + rtCtx.summary())
+
+    pulsar httpServeRuntimeContext(2, rtCtx)
+    pulsar httpAuditRuntime(rtCtx, "session_validation", "authorized")
+
+    let resCtx = workerPool.handleContext(ctx)
+    Console.printline("Context response status: " + StringUtils.intToString(resCtx.statusCode))
+    Console.printline("Context response body: " + resCtx.body)
+    Console.printline("Context metadata (handled_by_worker): " + ctx.getMetadataString("handled_by_worker", "none"))
+    Console.printline("Context metadata (route_matched): " + ctx.getMetadataString("route_matched", "none"))
+    Console.printline("Context attribute (tenant_id): " + ctx.getString("tenant_id", "none"))
+    Console.printline("Context attribute (session_token): " + rtCtx.getString("session_token", "none"))
+    rtCtx.finish()
+    var finishedStr = "false"
+    if rtCtx.isFinished() {
+        finishedStr = "true"
+    }
+    Console.printline("Context runtime callstack finalized successfully (isFinished: " + finishedStr + ").")
+
+    // Once the Worker pool is in charge of the HTTP server, execution must not
+    // fall through and exit — it has to lock the terminal and keep listening
+    // for incoming HTTP requests, just like a real server process would.
+    Console.printline("\n--- Handing off to HttpWorkerPool: locking terminal and listening for HTTP requests ---")
+    workerPool.run()
+
+    // All resources implement ICloseable — uniform teardown
+    // (reached only after workerPool.run() is stopped, e.g. via workerPool.stop())
+    tcpPool.close()
+    workerPool.close()
+    server.close()
     Console.printline("=== Snovalang HTTP Server Done ===")
     return 0
 }

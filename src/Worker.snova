@@ -1,0 +1,201 @@
+package Snova.Std.Network.Http
+
+import Snova.Std.Network
+import Snova.Std.Network.Tcp
+import Snova.Std.Collections
+import Snova.Std.Strings
+import Snova.Std.IO
+
+/* -- Doc:{HttpWorker}
+ *
+ * -- Description: Dedicated HTTP request worker running on a pulsar background thread.
+ */
+public class HttpWorker {
+    public var workerId: int
+    public var host: string
+    public var port: int
+    public var router: Router
+    public var activeRequests: int
+
+    public static method spawn(workerId: int, host: string, port: int, router: Router): HttpWorker {
+        pulsar httpWorkerTask(workerId, host, port)
+        return HttpWorker(workerId, host, port, router, 0)
+    }
+
+    public method handleContext(ctx: HttpContext): HttpResponse<string> {
+        this.activeRequests = this.activeRequests + 1
+        ctx.setWorkerId(this.workerId)
+        ctx.setMetadata("worker_host", this.host)
+        ctx.setMetadata("worker_port", StringUtils.intToString(this.port))
+        ctx.setMetadata("handled_by_worker", StringUtils.intToString(this.workerId))
+
+        let methodStr = HttpStatusHelper.methodToString(ctx.request.method)
+        pulsar httpServeContext(this.workerId, ctx)
+        pulsar httpServeRequestContext(this.workerId, ctx.id, ctx.request.path, methodStr)
+        pulsar httpServeRequest(this.workerId, ctx.request.path, methodStr)
+        pulsar httpAuditContext(ctx, "worker_dispatch", StringUtils.intToString(this.workerId))
+        let res = this.router.handleContext(ctx)
+        return res
+    }
+
+    public method handle(req: HttpRequest): HttpResponse<string> {
+        let ctx = HttpContext.create(req, "req_worker_" + StringUtils.intToString(this.workerId) + "_" + StringUtils.intToString(this.activeRequests + 1), this.workerId)
+        return this.handleContext(ctx)
+    }
+}
+
+/* -- Doc:{HttpWorkerPool}
+ *
+ * -- Description: Multi-parallel worker pool utilizing pulsar functions to listen and process HTTP connections.
+ */
+public class HttpWorkerPool {
+    public var host: string
+    public var port: int
+    public var workerCount: int
+    public var router: Router
+    public var workers: Array<HttpWorker>
+    public var isRunning: bool
+    public var tcpListener: TcpListener
+    public var requestSequence: int
+
+    public static method create(host: string, port: int, count: int, router: Router): HttpWorkerPool {
+        let empty: Array<HttpWorker> = []
+        let listener = TcpListener.bindWithBacklog(host, port, 128)
+        return HttpWorkerPool(host, port, count, router, empty, false, listener, 0)
+    }
+
+    public method start(): int {
+        this.isRunning = true
+        var i = 0
+        while i < this.workerCount {
+            let w = HttpWorker.spawn(i + 1, this.host, this.port, this.router)
+            this.workers.push(w)
+            i = i + 1
+        }
+        Console.printline(">>> [Snova.Std.Network.Http] HttpWorkerPool initialized with " + StringUtils.intToString(this.workerCount) + " pulsar workers.")
+        return 0
+    }
+
+    public method dispatchContext(ctx: HttpContext): HttpResponse<string> {
+        if this.workers.len() == 0 {
+            return this.router.handleContext(ctx)
+        }
+        let targetWorker = this.workers[0]
+        return targetWorker.handleContext(ctx)
+    }
+
+    public method dispatch(req: HttpRequest): HttpResponse<string> {
+        this.requestSequence = this.requestSequence + 1
+        let ctxId = "req_seq_" + StringUtils.intToString(this.requestSequence)
+        let ctx = HttpContext.create(req, ctxId, 1)
+        return this.dispatchContext(ctx)
+    }
+
+    public method handleContext(ctx: HttpContext): HttpResponse<string> {
+        return this.dispatchContext(ctx)
+    }
+
+    public method handle(req: HttpRequest): HttpResponse<string> {
+        return this.dispatch(req)
+    }
+
+    /* -- Doc:{HttpWorkerPool.run}
+     *
+     * -- Description: Blocks the calling thread (locking the terminal) and continuously
+     * accepts and dispatches incoming HTTP connections to the pulsar worker pool until
+     * the pool is stopped. This is the entry point that keeps a Worker-backed HTTP
+     * server alive instead of returning immediately after startup.
+     */
+    public method run(): int {
+        if this.workers.len() == 0 {
+            this.start()
+        }
+        this.isRunning = true
+        Console.printline(">>> [Snova.Std.Network.Http] HttpWorkerPool is now blocking the terminal and listening for HTTP requests on " + this.host + ":" + StringUtils.intToString(this.port))
+        var nextWorkerIndex = 0
+        while this.isRunning {
+            let connOpt = this.tcpListener.accept()
+            match connOpt {
+                Some(conn) -> {
+                    let worker = this.workers[nextWorkerIndex]
+                    this.requestSequence = this.requestSequence + 1
+                    let ctxId = "req_conn_" + StringUtils.intToString(conn.id) + "_" + StringUtils.intToString(this.requestSequence)
+                    let req = HttpRequest.get("/")
+                    let ctx = HttpContext.create(req, ctxId, worker.workerId)
+                    ctx.setMetadata("client_host", conn.remoteAddress.host)
+                    ctx.setMetadata("client_port", StringUtils.intToString(conn.remoteAddress.port))
+                    ctx.setMetadata("connection_id", StringUtils.intToString(conn.id))
+
+                    pulsar httpConnectionHandlerContext(worker.workerId, conn.id, conn.remoteAddress.host, conn.remoteAddress.port, ctx.id)
+                    pulsar httpConnectionHandler(worker.workerId, conn.id, conn.remoteAddress.host, conn.remoteAddress.port)
+                    pulsar httpAuditContext(ctx, "connection_accepted", StringUtils.intToString(conn.id))
+                    let res = worker.handleContext(ctx)
+                    Console.printline("[HttpWorkerPool] Connection #" + StringUtils.intToString(conn.id) + " [ctx: " + ctx.id + "] served by worker #" + StringUtils.intToString(worker.workerId) + " -> HTTP " + StringUtils.intToString(res.statusCode))
+                    nextWorkerIndex = nextWorkerIndex + 1
+                    if nextWorkerIndex >= this.workers.len() {
+                        nextWorkerIndex = 0
+                    }
+                }
+                None -> {
+                    this.isRunning = false
+                }
+            }
+        }
+        return 0
+    }
+
+    public method stop(): int {
+        this.isRunning = false
+        this.tcpListener.close()
+        Console.printline(">>> [Snova.Std.Network.Http] HttpWorkerPool stopped.")
+        return 0
+    }
+
+    public method close(): int {
+        return this.stop()
+    }
+}
+
+pulsar func httpWorkerTask(workerId: int, host: string, port: int): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] Pulsar thread listening for HTTP requests on " + host + ":" + StringUtils.intToString(port))
+}
+
+pulsar func httpServeRequest(workerId: int, reqPath: string, methodStr: string): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] Asynchronously processing HTTP " + methodStr + " " + reqPath)
+}
+
+pulsar func httpServeRequestContext(workerId: int, contextId: string, reqPath: string, methodStr: string): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] [ctx: " + contextId + "] Asynchronously processing HTTP " + methodStr + " " + reqPath + " with runtime context preserved")
+}
+
+pulsar func httpConnectionHandler(workerId: int, connId: int, host: string, port: int): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] Pulsar connection handler accepted connection #" + StringUtils.intToString(connId) + " on " + host + ":" + StringUtils.intToString(port))
+}
+
+pulsar func httpConnectionHandlerContext(workerId: int, connId: int, host: string, port: int, contextId: string): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] [ctx: " + contextId + "] Pulsar connection handler bound to connection #" + StringUtils.intToString(connId) + " on " + host + ":" + StringUtils.intToString(port))
+}
+
+pulsar func httpServeContext(workerId: int, ctx: HttpContext): unit {
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] [ctx: " + ctx.id + "] Worker received active context (path=" + ctx.request.path + ", workerId=" + StringUtils.intToString(ctx.workerId) + ")")
+}
+
+pulsar func httpServeRuntimeContext(workerId: int, rtCtx: RuntimeContext): unit {
+    var aliveStr = "alive"
+    if rtCtx.isAlive == false {
+        aliveStr = "finished"
+    }
+    Console.printline("[HttpWorker #" + StringUtils.intToString(workerId) + "] [rtCtx: " + rtCtx.id + "] Worker received runtime execution context (path=" + rtCtx.httpContext.request.path + ", status=" + aliveStr + ")")
+}
+
+pulsar func httpAuditContext(ctx: HttpContext, tag: string, value: string): unit {
+    Console.printline("[HttpContextAudit] [ctx: " + ctx.id + "] " + tag + " -> " + value + " | route=" + ctx.request.path)
+}
+
+pulsar func httpAuditRuntime(rtCtx: RuntimeContext, tag: string, value: string): unit {
+    var aliveStr = "alive"
+    if rtCtx.isAlive == false {
+        aliveStr = "finished"
+    }
+    Console.printline("[RuntimeContextAudit] [rtCtx: " + rtCtx.id + "] " + tag + " -> " + value + " | status=" + aliveStr)
+}

@@ -1,5 +1,6 @@
-package Snova.Std.Http
+package Snova.Std.Network.Http
 
+import Snova.Std.Network
 import Snova.Std.IO
 import Snova.Std.Strings
 import Snova.Std.Collections
@@ -8,7 +9,7 @@ import Snova.Std.Collections
  *
  * -- Description: Standard HTTP protocol request methods.
  */
-enum HttpMethod {
+public enum HttpMethod {
     Get
     Post
     Put
@@ -123,6 +124,30 @@ public class HttpRequest {
         return HttpRequest(method, path, headers, body)
     }
 
+    public static method get(path: string): HttpRequest {
+        let headers = HeaderMap.new()
+        return HttpRequest(HttpMethod.Get, path, headers, "")
+    }
+
+    public static method post(path: string, body: string): HttpRequest {
+        let headers = HeaderMap.new()
+        headers.set("Content-Type", "application/json; charset=utf-8")
+        headers.set("Content-Length", StringUtils.intToString(body.len()))
+        return HttpRequest(HttpMethod.Post, path, headers, body)
+    }
+
+    public static method put(path: string, body: string): HttpRequest {
+        let headers = HeaderMap.new()
+        headers.set("Content-Type", "application/json; charset=utf-8")
+        headers.set("Content-Length", StringUtils.intToString(body.len()))
+        return HttpRequest(HttpMethod.Put, path, headers, body)
+    }
+
+    public static method delete(path: string): HttpRequest {
+        let headers = HeaderMap.new()
+        return HttpRequest(HttpMethod.Delete, path, headers, "")
+    }
+
     public method format(): string {
         let methodStr = HttpStatusHelper.methodToString(this.method)
         var out = methodStr + " " + this.path + " HTTP/1.1\r\n"
@@ -151,10 +176,6 @@ public class HttpResponse<T> {
         return HttpResponse<T>(statusCode, headers, body, data)
     }
 
-    /* -- Doc:{ok}
-     *
-     * -- Description: Creates a 200 OK generic HttpResponse holding typed data.
-     */
     public static method ok(data: T, bodyJson: string = ""): HttpResponse<T> {
         let headers = HeaderMap.new()
         headers.set("Content-Type", "application/json; charset=utf-8")
@@ -162,10 +183,6 @@ public class HttpResponse<T> {
         return HttpResponse<T>(200, headers, bodyJson, data)
     }
 
-    /* -- Doc:{json}
-     *
-     * -- Description: Creates an application/json HttpResponse natively without requiring serialization libraries.
-     */
     public static method json(jsonText: string, statusCode: int = 200): HttpResponse<string> {
         let headers = HeaderMap.new()
         headers.set("Content-Type", "application/json; charset=utf-8")
@@ -173,10 +190,6 @@ public class HttpResponse<T> {
         return HttpResponse<string>(statusCode, headers, jsonText, jsonText)
     }
 
-    /* -- Doc:{text}
-     *
-     * -- Description: Creates a text/plain HttpResponse.
-     */
     public static method text(textBody: string, statusCode: int = 200): HttpResponse<string> {
         let headers = HeaderMap.new()
         headers.set("Content-Type", "text/plain; charset=utf-8")
@@ -184,10 +197,14 @@ public class HttpResponse<T> {
         return HttpResponse<string>(statusCode, headers, textBody, textBody)
     }
 
-    /* -- Doc:{format}
-     *
-     * -- Description: Serializes the complete HTTP response into standard HTTP/1.1 wire protocol format.
-     */
+    public static method html(htmlBody: string, statusCode: int = 200): HttpResponse<string> {
+        let headers = HeaderMap.new()
+        headers.set("Content-Type", "text/html; charset=utf-8")
+        headers.set("Server", "Snovalang-HttpServer/1.0")
+        headers.set("Content-Length", StringUtils.intToString(htmlBody.len()))
+        return HttpResponse<string>(statusCode, headers, htmlBody, htmlBody)
+    }
+
     public method format(): string {
         let reason = HttpStatusHelper.reasonPhrase(this.statusCode)
         var out = "HTTP/1.1 " + StringUtils.intToString(this.statusCode) + " " + reason + "\r\n"
