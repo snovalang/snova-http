@@ -1,8 +1,8 @@
 # Snova HTTP (`Snova.Std.Http`)
 
-Biblioteca de protocolos HTTP cliente/servidor em Snovalang puro.
+HTTP client/server wire protocols and data structures in pure Snovalang.
 
-## Módulos
-- `HttpRequest`, `HttpResponse`
+## Features
+- `HttpRequest`, `HttpResponse` with wire-format serialization (`format()`)
 - `HeaderMap`, `HttpHeader`
 - `HttpStatusHelper`, `HttpMethod`
