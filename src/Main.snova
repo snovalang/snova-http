@@ -1,0 +1,49 @@
+package Snova.Http.Main
+
+import Snova.Std.Http
+import Snova.Std.Server
+import Snova.Std.Collections
+import Snova.Std.Strings
+import Snova.Std.IO
+
+func main(): int {
+    Console.printline("=== Snovalang HTTP Server Starting ===")
+
+    let server = HttpServer.create(8080)
+    
+    let router = Router.new()
+    router.get("/api/health", 200, "{\"status\":\"healthy\",\"uptime\":\"ok\"}")
+    router.get("/api/version", 200, "{\"version\":\"1.0.0\",\"runtime\":\"SnovaRuntime\"}")
+    router.post("/api/echo", 201, "{\"message\":\"received\"}")
+    
+    server.setRouter(router)
+    server.listen()
+
+    // Simulate waiting for and serving incoming HTTP requests
+    let headers = HeaderMap.new()
+    headers.set("Accept", "application/json")
+
+    Console.printline("\n--- Incoming Connection: GET /api/health ---")
+    let req1 = HttpRequest.new(HttpMethod.Get, "/api/health", headers, "")
+    let res1 = server.handleRequest(req1)
+    Console.printline(res1.format())
+
+    Console.printline("--- Incoming Connection: GET /api/version ---")
+    let req2 = HttpRequest.new(HttpMethod.Get, "/api/version", headers, "")
+    let res2 = server.handleRequest(req2)
+    Console.printline(res2.format())
+
+    Console.printline("--- Incoming Connection: POST /api/echo ---")
+    let req3 = HttpRequest.new(HttpMethod.Post, "/api/echo", headers, "{\"test\":true}")
+    let res3 = server.handleRequest(req3)
+    Console.printline(res3.format())
+
+    Console.printline("--- Incoming Connection: GET /api/notfound ---")
+    let req4 = HttpRequest.new(HttpMethod.Get, "/api/notfound", headers, "")
+    let res4 = server.handleRequest(req4)
+    Console.printline(res4.format())
+
+    server.stop()
+    Console.printline("=== Snovalang HTTP Server Done ===")
+    return 0
+}
