@@ -6,12 +6,8 @@ dependencies(
     direct = [
         "github.com/supernovalang/snova-collections@1.0.0",
         "github.com/supernovalang/snova-io@1.0.0",
-        "github.com/supernovalang/snova-std@1.0.0",
         "github.com/supernovalang/snova-strings@1.0.0"
     ],
     indirect = [
-        "github.com/supernovalang/snova-std -> github.com/supernovalang/snova-collections",
-        "github.com/supernovalang/snova-std -> github.com/supernovalang/snova-io",
-        "github.com/supernovalang/snova-std -> github.com/supernovalang/snova-strings"
     ]
 )
